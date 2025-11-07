@@ -56,10 +56,9 @@ export async function POST(request: NextRequest) {
     const bytes = await file.arrayBuffer()
     const buffer = Buffer.from(bytes)
 
-    // Generate unique filename (timestamp + original name)
-    const timestamp = Date.now()
+    // Sanitize filename
     const sanitizedName = file.name.replace(/[^a-zA-Z0-9.-]/g, '_')
-    const fileName = `${timestamp}-${sanitizedName}`
+    const fileName = sanitizedName
 
     // Upload to S3
     console.log('Uploading to S3:', { fileName, folder, bufferSize: buffer.length })
