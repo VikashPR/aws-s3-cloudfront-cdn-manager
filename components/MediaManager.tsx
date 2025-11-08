@@ -30,9 +30,10 @@ export function MediaManager() {
   const [copiedUrl, setCopiedUrl] = useState<string | null>(null)
   const [deletingKey, setDeletingKey] = useState<string | null>(null)
   const [dropdownOpen, setDropdownOpen] = useState(false)
-  const [selectedFile, setSelectedFile] = useState<File | null>(null)
-  const [filePreview, setFilePreview] = useState<FilePreview | null>(null)
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([])
+  const [filePreviews, setFilePreviews] = useState<FilePreview[]>([])
   const [dragActive, setDragActive] = useState(false)
+  const [uploadProgress, setUploadProgress] = useState<{ fileName: string; status: 'uploading' | 'success' | 'error' }[]>([])
   const fileInputRef = useRef<HTMLInputElement>(null)
   const dropdownRef = useRef<HTMLDivElement>(null)
 
@@ -84,18 +85,21 @@ export function MediaManager() {
 
   const handleFileUpload = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault()
-    if (!selectedFile) {
-      setError('Please select a file')
+    if (!selectedFiles || selectedFiles.length === 0) {
+      setError('Please select at least one file')
       return
     }
 
     setUploading(true)
     setError('')
     setSuccess('')
+    setUploadProgress(selectedFiles.map(f => ({ fileName: f.name, status: 'uploading' })))
 
     try {
       const formData = new FormData()
-      formData.append('file', selectedFile)
+      selectedFiles.forEach(file => {
+        formData.append('files', file)
+      })
       formData.append('folder', uploadFolder)
 
       const response = await fetch('/api/media/upload', {
@@ -105,15 +109,40 @@ export function MediaManager() {
 
       const data = await response.json()
 
-      if (!response.ok) {
+      if (!response.ok && response.status !== 207) {
         throw new Error(data.error || 'Upload failed')
       }
 
-      setSuccess(`File uploaded successfully! CDN URL: ${data.url}`)
-      clearFileSelection()
+      // Update progress
+      const newProgress = selectedFiles.map(file => {
+        const uploadResult = data.uploads?.find((u: any) => u.originalName === file.name)
+        const errorResult = data.errors?.find((e: any) => e.fileName === file.name)
+        return {
+          fileName: file.name,
+          status: uploadResult ? 'success' : errorResult ? 'error' : 'uploading'
+        } as { fileName: string; status: 'uploading' | 'success' | 'error' }
+      })
+      setUploadProgress(newProgress)
+
+      if (data.success) {
+        setSuccess(`✅ Successfully uploaded ${data.successCount} file(s)!`)
+      } else {
+        setSuccess(`⚠️ Uploaded ${data.successCount} of ${data.totalFiles} file(s). ${data.errorCount} failed.`)
+        if (data.errors) {
+          setError(`Failed files: ${data.errors.map((e: any) => e.fileName).join(', ')}`)
+        }
+      }
+
+      // Clear after a delay to show results
+      setTimeout(() => {
+        clearFileSelection()
+        setUploadProgress([])
+      }, 3000)
+
       await loadFiles() // Reload file list
     } catch (err: any) {
       setError(err.message || 'Upload failed')
+      setUploadProgress([])
     } finally {
       setUploading(false)
     }
@@ -134,20 +163,20 @@ export function MediaManager() {
     e.stopPropagation()
     setDragActive(false)
 
-    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      const file = e.dataTransfer.files[0]
-      setSelectedFile(file)
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      const newFiles = Array.from(e.dataTransfer.files)
+      setSelectedFiles(prev => [...prev, ...newFiles])
       setError('')
-      createFilePreview(file)
+      newFiles.forEach(file => createFilePreview(file))
     }
   }
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      const file = e.target.files[0]
-      setSelectedFile(file)
+    if (e.target.files && e.target.files.length > 0) {
+      const newFiles = Array.from(e.target.files)
+      setSelectedFiles(prev => [...prev, ...newFiles])
       setError('')
-      createFilePreview(file)
+      newFiles.forEach(file => createFilePreview(file))
     }
   }
 
@@ -155,22 +184,33 @@ export function MediaManager() {
     const url = URL.createObjectURL(file)
     const isImage = file.type.startsWith('image/')
     const isVideo = file.type.startsWith('video/')
-    setFilePreview({
+    setFilePreviews(prev => [...prev, {
       file,
       url,
       type: isImage ? 'image' : isVideo ? 'video' : 'document'
-    })
+    }])
   }
 
   const clearFileSelection = () => {
-    setSelectedFile(null)
-    if (filePreview) {
-      URL.revokeObjectURL(filePreview.url)
-      setFilePreview(null)
-    }
+    setSelectedFiles([])
+    filePreviews.forEach(preview => {
+      URL.revokeObjectURL(preview.url)
+    })
+    setFilePreviews([])
     if (fileInputRef.current) {
       fileInputRef.current.value = ''
     }
+  }
+
+  const removeFile = (index: number) => {
+    const newFiles = selectedFiles.filter((_, i) => i !== index)
+    const removedPreview = filePreviews[index]
+    if (removedPreview) {
+      URL.revokeObjectURL(removedPreview.url)
+    }
+    const newPreviews = filePreviews.filter((_, i) => i !== index)
+    setSelectedFiles(newFiles)
+    setFilePreviews(newPreviews)
   }
 
   const copyToClipboard = async (url: string, e?: React.MouseEvent) => {
@@ -335,10 +375,10 @@ export function MediaManager() {
                 </div>
               </div>
 
-              {/* File Upload with Preview */}
+              {/* File Upload with Multiple Files Support */}
               <div className="lg:col-span-1">
                 <label className="block text-xs font-medium text-gray-600 mb-1.5">
-                  Select File
+                  Select Files (Multiple)
                 </label>
                 <div
                   onDragEnter={handleDrag}
@@ -348,7 +388,7 @@ export function MediaManager() {
                   className={`relative border-2 border-dashed rounded-lg transition-all ${
                     dragActive
                       ? 'border-blue-600 bg-blue-50 scale-[1.01]'
-                      : selectedFile
+                      : selectedFiles.length > 0
                       ? 'border-blue-600 bg-blue-50'
                       : 'border-gray-300 hover:border-gray-400'
                   }`}
@@ -356,12 +396,12 @@ export function MediaManager() {
                   <input
                     ref={fileInputRef}
                     type="file"
+                    multiple
                     onChange={handleFileChange}
                     className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-                    required
                   />
                   <div className="px-4 py-3">
-                    {selectedFile ? (
+                    {selectedFiles.length > 0 ? (
                       <div className="flex items-center gap-3">
                         <div className="flex-shrink-0">
                           <svg
@@ -379,9 +419,11 @@ export function MediaManager() {
                           </svg>
                         </div>
                         <div className="flex-1 min-w-0">
-                          <p className="text-sm font-medium text-gray-900 truncate">{selectedFile.name}</p>
+                          <p className="text-sm font-medium text-gray-900">
+                            {selectedFiles.length} file{selectedFiles.length > 1 ? 's' : ''} selected
+                          </p>
                           <p className="text-xs text-gray-500">
-                            {formatFileSize(selectedFile.size)}
+                            {formatFileSize(selectedFiles.reduce((acc, f) => acc + f.size, 0))} total
                           </p>
                         </div>
                         <button
@@ -416,7 +458,7 @@ export function MediaManager() {
                           <p className="text-sm text-gray-700">
                             <span className="font-medium">Click to upload</span> or drag and drop
                           </p>
-                          <p className="text-xs text-gray-500">Any file type</p>
+                          <p className="text-xs text-gray-500">Multiple files supported</p>
                         </div>
                       </div>
                     )}
@@ -425,49 +467,85 @@ export function MediaManager() {
               </div>
             </div>
 
-            {/* File Preview */}
-            {filePreview && (
+            {/* Files List with Remove Option */}
+            {selectedFiles.length > 0 && (
               <div className="border border-gray-200 rounded-lg p-4 bg-gray-50">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs font-medium text-gray-600">Preview</span>
+                <div className="flex items-center justify-between mb-3">
+                  <span className="text-xs font-medium text-gray-600">
+                    Selected Files ({selectedFiles.length})
+                  </span>
                   <button
                     type="button"
                     onClick={clearFileSelection}
                     className="text-xs text-red-600 hover:text-red-700 font-medium"
                   >
-                    Remove
+                    Clear All
                   </button>
                 </div>
-                {filePreview.type === 'image' ? (
-                  <div className="relative w-full h-48 bg-white rounded-lg overflow-hidden border border-gray-200">
-                    <Image
-                      src={filePreview.url}
-                      alt="Preview"
-                      fill
-                      className="object-contain"
-                    />
-                  </div>
-                ) : filePreview.type === 'video' ? (
-                  <div className="relative w-full h-48 bg-white rounded-lg overflow-hidden border border-gray-200">
-                    <video
-                      src={filePreview.url}
-                      controls
-                      className="w-full h-full object-contain"
-                    />
-                  </div>
-                ) : (
-                  <div className="bg-white rounded-lg p-6 border border-gray-200">
-                    <div className="flex items-center gap-3">
-                      <svg className="w-10 h-10 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
-                      </svg>
-                      <div>
-                        <p className="text-sm font-medium text-gray-900">{filePreview.file.name}</p>
-                        <p className="text-xs text-gray-500">Document • {formatFileSize(filePreview.file.size)}</p>
+                <div className="space-y-2 max-h-64 overflow-y-auto">
+                  {selectedFiles.map((file, index) => {
+                    const preview = filePreviews[index]
+                    const progress = uploadProgress.find(p => p.fileName === file.name)
+                    return (
+                      <div
+                        key={index}
+                        className="flex items-center gap-3 bg-white rounded-lg p-3 border border-gray-200"
+                      >
+                        {preview?.type === 'image' ? (
+                          <div className="flex-shrink-0 w-12 h-12 relative rounded overflow-hidden">
+                            <Image
+                              src={preview.url}
+                              alt={file.name}
+                              fill
+                              className="object-cover"
+                            />
+                          </div>
+                        ) : (
+                          <div className="flex-shrink-0">
+                            <svg className="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+                            </svg>
+                          </div>
+                        )}
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium text-gray-900 truncate">{file.name}</p>
+                          <p className="text-xs text-gray-500">{formatFileSize(file.size)}</p>
+                        </div>
+                        {progress && (
+                          <div className="flex-shrink-0">
+                            {progress.status === 'uploading' && (
+                              <svg className="animate-spin h-5 w-5 text-blue-600" fill="none" viewBox="0 0 24 24">
+                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                              </svg>
+                            )}
+                            {progress.status === 'success' && (
+                              <svg className="h-5 w-5 text-green-600" fill="currentColor" viewBox="0 0 20 20">
+                                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                              </svg>
+                            )}
+                            {progress.status === 'error' && (
+                              <svg className="h-5 w-5 text-red-600" fill="currentColor" viewBox="0 0 20 20">
+                                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                              </svg>
+                            )}
+                          </div>
+                        )}
+                        {!uploading && (
+                          <button
+                            type="button"
+                            onClick={() => removeFile(index)}
+                            className="flex-shrink-0 p-1 text-gray-400 hover:text-red-600 transition-colors"
+                          >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                          </button>
+                        )}
                       </div>
-                    </div>
-                  </div>
-                )}
+                    )
+                  })}
+                </div>
               </div>
             )}
 
@@ -492,7 +570,7 @@ export function MediaManager() {
             <div className="flex gap-2">
               <button
                 type="submit"
-                disabled={uploading || !selectedFile}
+                disabled={uploading || selectedFiles.length === 0}
                 className="flex-1 bg-blue-600 text-white px-4 py-2 rounded-lg font-medium hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed text-sm"
               >
                 {uploading ? (
@@ -501,13 +579,13 @@ export function MediaManager() {
                       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                     </svg>
-                    Uploading...
+                    Uploading {selectedFiles.length} file{selectedFiles.length > 1 ? 's' : ''}...
                   </span>
                 ) : (
-                  'Upload File'
+                  `Upload ${selectedFiles.length > 0 ? selectedFiles.length : ''} File${selectedFiles.length !== 1 ? 's' : ''}`
                 )}
               </button>
-              {selectedFile && (
+              {selectedFiles.length > 0 && (
                 <button
                   type="button"
                   onClick={clearFileSelection}
